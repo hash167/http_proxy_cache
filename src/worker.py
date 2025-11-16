@@ -4,9 +4,10 @@ from datastructures import Connection, ConnectionState, ProxyConfig
 
 
 def handle_accept(
-        listen_sock: socket.socket,
-        selector: selectors.DefaultSelector,
-        connections: dict[int, Connection]) -> None:
+    listen_sock: socket.socket,
+    selector: selectors.DefaultSelector,
+    connections: dict[int, Connection],
+) -> None:
     try:
         client_sock, addr = listen_sock.accept()
         client_sock.setblocking(False)
@@ -19,10 +20,11 @@ def handle_accept(
 
 
 def handle_connection(
-        key: selectors.SelectorKey,
-        mask: int,
-        selector: selectors.DefaultSelector,
-        connections: dict[int, Connection]) -> None:
+    key: selectors.SelectorKey,
+    mask: int,
+    selector: selectors.DefaultSelector,
+    connections: dict[int, Connection],
+) -> None:
     conn = key.data
     try:
         if conn.state == ConnectionState.RECV_REQUEST:
@@ -77,8 +79,10 @@ def worker(id: int, config: ProxyConfig):
     selector.register(listen_sock, selectors.EVENT_READ)
     connections = {}
 
-    print(f"Worker {id} started and listening on "
-          f"{config.listen_address}:{config.listen_port}")
+    print(
+        f"Worker {id} started and listening on "
+        f"{config.listen_address}:{config.listen_port}"
+    )
 
     try:
         while True:

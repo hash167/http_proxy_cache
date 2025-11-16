@@ -11,7 +11,8 @@ def main():
     workers = []
     for i in range(config.num_workers):
         worker_process = multiprocessing.Process(
-            target=worker, args=(i, config))
+            target=worker, args=(i, config)
+        )
         worker_process.start()
         workers.append(worker_process)
 

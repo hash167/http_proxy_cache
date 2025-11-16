@@ -32,7 +32,8 @@ class ProxyConfig:
             listen_address=os.getenv("LISTEN_ADDRESS", "127.0.0.1"),
             listen_port=int(os.getenv("LISTEN_PORT", "8888")),
             num_workers=int(
-                os.getenv("NUM_WORKERS", str(multiprocessing.cpu_count()))),
+                os.getenv("NUM_WORKERS", str(multiprocessing.cpu_count()))
+            ),
             cache_size=int(os.getenv("CACHE_SIZE", str(1024 * 1024 * 100))),
             cache_ttl=int(os.getenv("CACHE_TTL", str(300))),
             dns_cache_ttl=int(os.getenv("DNS_CACHE_TTL", str(300))),

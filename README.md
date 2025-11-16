@@ -63,17 +63,23 @@ A high-performance HTTP proxy server with caching capabilities, built using Pyth
 
 ## Usage
 
-```bash
-# Run with defaults
-python server.py
-
-# Run with custom configuration
-LISTEN_PORT=3128 NUM_WORKERS=4 CACHE_SIZE=209715200 python server.py
-```
-
-## Testing
+### Setup
 
 ```bash
-# Test basic connectivity (currently returns HTTP 200)
-curl -x http://127.0.0.1:8888 http://example.com
+# Create virtual environment and install dependencies
+make setup
+
+# Activate the virtual environment
+source .venv/bin/activate
 ```
+
+### Running the Server
+
+```bash
+# Run with defaults (automatically uses .venv if available)
+LISTEN_PORT=3128 NUM_WORKERS=4  make run
+```
+
+### Testing
+
+`make test_server`
