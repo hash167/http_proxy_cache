@@ -82,4 +82,7 @@ LISTEN_PORT=3128 NUM_WORKERS=4  make run
 
 ### Testing
 
-`make test_server`
+```bash
+# runs pytest
+make test
+```

@@ -1,6 +1,9 @@
 import socket
 import selectors
 from datastructures import Connection, ConnectionState, ProxyConfig
+from http_parser import parse_http_request
+from upstream import connect_upstream
+from tunnel import handle_https_tunnel, parse_host_port
 
 
 def handle_accept(
@@ -36,22 +39,120 @@ def handle_connection(
             else:
                 conn.recv_buffer += data
                 print(f"Received {len(data)} bytes from client")
-                # For now, just close the connection after receiving data
-                # TODO: Parse HTTP request and handle properly
-                conn.socket.send(b"HTTP/1.1 200 OK\r\n\r\n")
+
+                # Check if we have a complete HTTP request
+                if b"\r\n\r\n" not in conn.recv_buffer:
+                    # Keep receiving
+                    return
+
+                # Parse HTTP request
+                http_request = parse_http_request(conn.recv_buffer)
+
+                if not http_request or "Host" not in http_request:
+                    print("Invalid HTTP request or missing Host header")
+                    conn.state = ConnectionState.CLOSED
+                    return
+
+                method = http_request.get("method")
+                url = http_request.get("url")
+                print(f"Parsed request: {method} {url}")
+                print(f"Host: {http_request.get('Host')}")
+
+                # Handle CONNECT requests (HTTPS tunneling)
+                if method == "CONNECT":
+                    print("Handling CONNECT request for HTTPS tunneling")
+                    # Delegate to tunnel module
+                    handle_https_tunnel(conn.socket, url)
+                    conn.state = ConnectionState.CLOSED
+                    return
+
+                # Parse host and port from Host header
+                host_string = http_request.get("Host", "")
+                if not host_string:
+                    print("No Host header found")
+                    conn.state = ConnectionState.CLOSED
+                    return
+
+                hostname, port = parse_host_port(host_string)
+                print(f"Connecting to {hostname}:{port}")
+
+                # Connect to upstream server (blocking for now)
+                try:
+                    conn.upstream_address = (hostname, port)
+                    conn.upstream_socket = connect_upstream(
+                        conn.upstream_address
+                    )
+
+                    # Send request to upstream (blocking)
+                    sent = conn.upstream_socket.send(conn.recv_buffer)
+                    print(f"Sent {sent} bytes to upstream")
+
+                    # Receive response from upstream (blocking)
+                    response = b""
+                    while True:
+                        data = conn.upstream_socket.recv(4096)
+                        if not data:
+                            break
+                        response += data
+                        # Simple check for complete HTTP response
+                        if b"\r\n\r\n" in response:
+                            # Check if we have the body too
+                            # For now, assume we got it all
+                            break
+
+                    print(f"Received {len(response)} bytes from upstream")
+
+                    # Send response back to client
+                    conn.socket.send(response)
+                    print(f"Sent {len(response)} bytes to client")
+
+                    # Close upstream connection
+                    conn.upstream_socket.close()
+
+                except Exception as e:
+                    print(f"Error proxying request: {e}")
+
+                # Close client connection
                 conn.state = ConnectionState.CLOSED
+
         elif conn.state == ConnectionState.RECV_UPSTREAM:
             print("Receiving upstream")
+            data = conn.upstream_socket.recv(4096)
+            if not data:
+                conn.state = ConnectionState.CLOSED
+            else:
+                conn.recv_buffer += data
+                print(f"Received {len(data)} bytes from upstream")
+                conn.state = ConnectionState.SEND_CLIENT
         elif conn.state == ConnectionState.SEND_UPSTREAM:
             print("Sending upstream")
+            data = conn.upstream_socket.send(conn.send_buffer)
+            if not data:
+                conn.state = ConnectionState.CLOSED
+            else:
+                conn.send_buffer = conn.send_buffer[data:]
+                print(f"Sent {data} bytes to upstream")
+                conn.state = ConnectionState.RECV_UPSTREAM
         elif conn.state == ConnectionState.SEND_CLIENT:
             print("Sending client")
+            data = conn.socket.send(conn.send_buffer)
+            if not data:
+                conn.state = ConnectionState.CLOSED
+            else:
+                conn.send_buffer = conn.send_buffer[data:]
+                print(f"Sent {data} bytes to client")
+                conn.state = ConnectionState.RECV_UPSTREAM
 
         if conn.state == ConnectionState.CLOSED:
             print("Closing connection")
-            selector.unregister(conn.socket)
-            conn.socket.close()
-            del connections[conn.socket.fileno()]
+            try:
+                fd = conn.socket.fileno()
+                selector.unregister(conn.socket)
+                conn.socket.close()
+                if fd in connections:
+                    del connections[fd]
+            except Exception as e:
+                print(f"Error closing connection: {e}")
 
     except Exception as e:
         print(f"Error handling connection: {e}")
@@ -103,4 +204,50 @@ def worker(id: int, config: ProxyConfig):
         listen_sock.close()
         for conn in connections.values():
             conn.socket.close()
+        selector.close()
+
+
+def handle_upstream_connection(
+    key: selectors.SelectorKey,
+    mask: int,
+    selector: selectors.DefaultSelector,
+    connections: dict[int, Connection],
+) -> None:
+    try:
+        conn = key.data
+        if conn.state == ConnectionState.RECV_UPSTREAM:
+            data = conn.socket.recv(4096)
+            if not data:
+                conn.state = ConnectionState.CLOSED
+            else:
+                conn.recv_buffer += data
+                print(f"Received {len(data)} bytes from upstream")
+                conn.state = ConnectionState.SEND_CLIENT
+        elif conn.state == ConnectionState.SEND_UPSTREAM:
+            data = conn.socket.send(conn.send_buffer)
+            if not data:
+                conn.state = ConnectionState.CLOSED
+            else:
+                conn.send_buffer = conn.send_buffer[data:]
+                print(f"Sent {data} bytes to upstream")
+                conn.state = ConnectionState.RECV_UPSTREAM
+        elif conn.state == ConnectionState.SEND_CLIENT:
+            data = conn.socket.send(conn.send_buffer)
+            if not data:
+                conn.state = ConnectionState.CLOSED
+            else:
+                conn.send_buffer = conn.send_buffer[data:]
+                print(f"Sent {data} bytes to client")
+                conn.state = ConnectionState.RECV_UPSTREAM
+    except Exception as e:
+        print(f"Error handling upstream connection: {e}")
+        try:
+            selector.unregister(conn.socket)
+            conn.socket.close()
+            if conn.socket.fileno() in connections:
+                del connections[conn.socket.fileno()]
+        except Exception:
+            pass
+    finally:
+        conn.socket.close()
         selector.close()

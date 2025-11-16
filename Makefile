@@ -1,4 +1,4 @@
-.PHONY: setup run lint clean clean-venv test_server
+.PHONY: setup run lint clean clean-venv test test_server
 
 PYTHON := python3
 
@@ -40,6 +40,15 @@ lint:
 		black src/ --line-length=79; \
 	fi
 	@echo "✓ Linting and formatting complete!"
+
+# run pytest tests
+test:
+	@echo "Running tests..."
+	@if [ -d .venv ]; then \
+		.venv/bin/pytest tests/ -v; \
+	else \
+		pytest tests/ -v; \
+	fi
 
 # clean up cache files
 clean:
