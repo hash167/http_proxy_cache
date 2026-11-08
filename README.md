@@ -2,7 +2,7 @@
 
 A small Python HTTP proxy. A parent process starts several **worker processes**. Each worker has its own listening socket and its own event loop, and can watch more than one socket at a time. Clients connect to the proxy’s IP address and port. They never address a worker by name.
 
-The repository name says “cache,” and the configuration object has cache fields. No cache is implemented. The HTTP path that runs today is a first cut: it can accept connections, parse request headers, forward one plain HTTP request on a blocking upstream socket, and open a CONNECT tunnel. It is not a finished proxy, and it is not equivalent to nginx.
+The repository name says “cache,” and the configuration object has cache fields. Cache access on each worker is planned, as in the intended architecture below, and it does not run yet. The HTTP path that runs today is a first cut: it can accept connections, parse request headers, forward one plain HTTP request on a blocking upstream socket, and open a CONNECT tunnel. It is not a finished proxy, and it is not equivalent to nginx.
 
 The server itself uses the Python standard library. [requirements.txt](requirements.txt) installs test and lint tools.
 
@@ -29,14 +29,50 @@ The server itself uses the Python standard library. [requirements.txt](requireme
 
 ### Not built
 
-- A response cache or a DNS cache. Nothing stores a response, honors a TTL, or reuses a lookup.
+- A response cache or a DNS cache. That is the cache access drawn on each worker in the intended architecture. Nothing stores a response, honors a TTL, or reuses a lookup yet.
 - Non-blocking upstream reads and writes on the worker selector.
 - A complete HTTP message parser: no `Content-Length` framing, no chunked bodies, no hop-by-hop header handling, no request-line rewrite from absolute-form (`GET http://host/path`) to origin-form (`GET /path`).
 - An enforced cap on simultaneous clients. `max_connections` is the `listen` backlog (default 1024), which limits how many not-yet-accepted connections the kernel will queue. The kernel may lower that number further. The accept loop does not count open clients.
 - IPv6. Listening sockets are `AF_INET`, and `parse_host_port` splits on the first colon, so an IPv6 literal is not handled.
 - Moving a connection between workers, or choosing a worker by round-robin or by which worker is least busy.
 
-An earlier README listed HTTP parsing, upstream connections, tests, and the whole state machine as remaining work, and it described the server as answering with a simple `200 OK`. The code has moved on. Header parsing, a blocking forward, a CONNECT tunnel, and unit tests are in the tree. The running server forwards upstream bytes (or, for CONNECT, a fixed `200 Connection Established`). It does not build the simple `200 OK` that `build_http_response` knows how to build. The old diagram’s “cache access” step is not in the program.
+An earlier README listed HTTP parsing, upstream connections, tests, and the whole state machine as remaining work, and it described the server as answering with a simple `200 OK`. The code has moved on. Header parsing, a blocking forward, a CONNECT tunnel, and unit tests are in the tree. The running server forwards upstream bytes (or, for CONNECT, a fixed `200 Connection Established`). It does not build the simple `200 OK` that `build_http_response` knows how to build.
+
+## Intended architecture
+
+This is the architecture the project is building toward. The main process loads configuration and spawns worker processes. Each worker has its own `SO_REUSEPORT` listening socket, a selector event loop, the connections it has accepted, and cache access.
+
+```
+┌─────────────────────────────────────────────────┐
+│                  Main Process                    │
+│  - Loads configuration                           │
+│  - Spawns worker processes                       │
+└───────────────┬─────────────────────────────────┘
+                │
+        ┌───────┴────────┬─────────────┬───────────┐
+        │                │             │           │
+┌───────▼──────┐ ┌──────▼──────┐ ┌───▼──────┐ ┌──▼──────┐
+│   Worker 0   │ │  Worker 1   │ │Worker 2  │ │  ...    │
+│              │ │             │ │          │ │         │
+│ ┌──────────┐ │ │ ┌─────────┐ │ │┌────────┐│ │         │
+│ │SO_REUSE  │ │ │ │SO_REUSE │ │ ││SO_REUSE││ │         │
+│ │PORT sock │ │ │ │PORT sock│ │ ││PORT sock││ │         │
+│ └────┬─────┘ │ │ └────┬────┘ │ │└───┬────┘│ │         │
+│      │       │ │      │      │ │    │     │ │         │
+│  ┌───▼────┐  │ │  ┌───▼───┐  │ │┌───▼───┐ │ │         │
+│  │Selector│  │ │  │Selector│ │ ││Selector││ │         │
+│  │ Event  │  │ │  │ Event │  │ ││ Event  ││ │         │
+│  │ Loop   │  │ │  │ Loop  │  │ ││ Loop   ││ │         │
+│  └────────┘  │ │  └───────┘  │ │└────────┘│ │         │
+│              │ │             │ │          │ │         │
+│ Connections  │ │Connections  │ │Connections│ │         │
+│ Cache Access │ │Cache Access │ │Cache Access│ │         │
+└──────────────┘ └─────────────┘ └───────────┘ └─────────┘
+```
+
+**Cache access** on each worker is planned. It is not implemented. `cache_size`, `cache_ttl`, `dns_cache_ttl`, `cache_key`, and `cache_response` are the fields set aside for it.
+
+**Blocking upstream** is a separate limitation of the code that runs today. A plain HTTP forward still blocks in `connect_upstream` and `recv`, and a `CONNECT` tunnel still blocks in `handle_https_tunnel`, so that worker leaves its selector until the exchange finishes. The sections below describe that current behavior.
 
 ## Workers are processes
 
